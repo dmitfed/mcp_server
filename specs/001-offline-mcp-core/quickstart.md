@@ -1,0 +1,160 @@
+# Руководство приёмки — офлайн-ядро MCP-сервера
+
+[План](plan.md) · [Версии и хеши источников](research.md) ·
+[Контракт проверочной CLI](contracts/acceptance-host.md)
+
+Команды системы, движка и установки используют выбранный профиль. Команды
+`mcp-core` и `mcp-core-check` предназначены для приёмки собранного релиза.
+
+## Подготовить комплект
+
+Целевой образ — Debian 13 x86-64 (amd64) с Python ≥ 3.13, модулем `venv`,
+системными библиотеками, `tar`, `sha256sum`, `curl`, `ldd` и `ss`. Для первого
+прогона использовать системные `python3` и `python3-venv`. Подготовить образ
+и пакеты можно на подключённой машине. Зафиксировать точные версии окружения
+и список системных библиотек, полученный при проверке бинарника.
+
+Сборка на Debian 13 amd64 выпускает wheel проекта с обоими CLI, скачивает
+wheels всех зависимостей для целевого интерпретатора и формирует
+`requirements.lock` с точными версиями и SHA-256, включая wheel проекта.
+При использовании более новой версии Python подготовить комплект для неё.
+Пакеты устанавливаются из `wheelhouse`. Структура комплекта приведена ниже.
+
+```text
+offline-kit/
+├── SHA256SUMS
+├── requirements.lock
+├── wheelhouse/
+├── examples/                    # empty.toml, demo.toml, demo-module.json
+├── tests/                       # офлайн-проверки ядра и их фикстуры
+├── engine/
+│   └── llama-b12359-bin-ubuntu-x64.tar.gz
+└── model/
+    └── Qwen3-4B-Q4_K_M.gguf
+```
+
+На подключённой машине внешние артефакты можно положить в комплект так:
+
+```bash
+KIT="$PWD/offline-kit"
+mkdir -p "$KIT/engine" "$KIT/model"
+curl -fL 'https://github.com/ggml-org/llama.cpp/releases/download/b12359/llama-b12359-bin-ubuntu-x64.tar.gz' \
+  -o "$KIT/engine/llama-b12359-bin-ubuntu-x64.tar.gz"
+hf download Qwen/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf \
+  --revision a9a60d009fa7ff9606305047c2bf77ac25dbec49 --local-dir "$KIT/model"
+```
+
+Сверить архив и GGUF со значениями в исследовании, включить использованные
+файлы комплекта в `SHA256SUMS` с путями относительно корня и перенести комплект.
+Для целевой машины требуются сам GGUF и описанные артефакты. Команда `hf`
+выполняется только на машине подготовки. Имя CPU-архива содержит `ubuntu`
+по имени upstream-сборки. Проверка загрузки бинарника выполняется на Debian 13.
+
+## Установить и проверить ядро без модели
+
+Работать на чистой машине из подготовленного образа без маршрута в интернет.
+Сохранить loopback. Для SC-005 и SC-006 подготовить вторую машину в изолированной
+локальной сети с маршрутом к целевой машине.
+
+```bash
+KIT="$PWD/offline-kit"
+RUNTIME="$PWD/mcp-core-runtime"
+PYTHON_BIN="${MCP_CORE_PYTHON:-python3}"
+(cd "$KIT" && sha256sum --check SHA256SUMS)
+"$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 13))'
+"$PYTHON_BIN" -m venv "$RUNTIME/venv"
+"$RUNTIME/venv/bin/python" -m pip --isolated install \
+  --no-index --find-links "$KIT/wheelhouse" --only-binary=:all: --require-hashes \
+  -r "$KIT/requirements.lock"
+"$RUNTIME/venv/bin/python" -m pip check
+"$RUNTIME/venv/bin/mcp-core" --version
+"$RUNTIME/venv/bin/mcp-core-check" --version
+"$RUNTIME/venv/bin/mcp-core-check" core \
+  --empty-config "$KIT/examples/empty.toml" --demo-config "$KIT/examples/demo.toml"
+(cd "$KIT" && "$RUNTIME/venv/bin/python" -m unittest discover -s tests -v)
+```
+
+Ожидаемые результаты:
+
+| Проверка | Наблюдение |
+|---|---|
+| SC-001 и SC-002 | Версия хоста `0.1.0`. Клиент получает пустой каталог, затем в отдельном запуске видит `demo_echo` и получает ожидаемый объект. Оба запуска проходят при остановленном движке. |
+| FR-001 и FR-003 | Отсутствующий конфиг, отсутствующий обязательный манифест или конфликт имени видны в диагностике запуска. Модуль из тестового пакета подключается штатной конфигурацией. |
+| FR-005 и FR-006 | Ошибочные аргументы, неизвестное или отключённое имя и неверные параметры MCP отклоняются. Фикстура защищённой операции проверяет отказ без требуемого полномочия. |
+| SC-003 | Ошибка обработчика и таймаут возвращают ошибки инструмента. Ответ таймаута приходит до нормального завершения искусственно задержанной операции. После каждого сбоя доступны каталог и второй инструмент. Журналы содержат ожидаемые записи и ноль контрольных значений. |
+| Запуск хостом | Хост запускает дочерний процесс на выделенном ОС loopback-порту, обнаруживает MCP endpoint через HTTP и собирает дочерний процесс по завершении проверки. |
+
+## Проверить модель и сквозной диалог
+
+Распаковать каталог движка целиком. Перед приёмкой проверить загрузку библиотеки
+и версию бинарника. Вывод `ldd` не должен содержать строк `not found`.
+
+```bash
+mkdir -p "$RUNTIME/engine"
+tar -xzf "$KIT/engine/llama-b12359-bin-ubuntu-x64.tar.gz" -C "$RUNTIME/engine"
+LLAMA_SERVER="$RUNTIME/engine/llama-b12359/llama-server"
+ldd "$LLAMA_SERVER"
+"$LLAMA_SERVER" --version
+"$LLAMA_SERVER" --offline --host 127.0.0.1 --port 9931 \
+  --model "$KIT/model/Qwen3-4B-Q4_K_M.gguf" --alias qwen3-4b \
+  --ctx-size 4096 --parallel 1 --n-gpu-layers 0 --jinja --no-ui \
+  --chat-template-kwargs '{"enable_thinking":false}'
+```
+
+После готовности движка выполнить в отдельной оболочке из того же каталога:
+
+```bash
+KIT="$PWD/offline-kit"
+RUNTIME="$PWD/mcp-core-runtime"
+curl --noproxy '*' --max-time 5 -fsS http://127.0.0.1:9931/health
+"$RUNTIME/venv/bin/mcp-core-check" e2e --config "$KIT/examples/demo.toml"
+```
+
+Для SC-004 вывод проверки подтверждает обнаружение `demo_echo`, ожидаемые
+аргументы и результат, передачу результата с исходным ID вызова и непустой
+финальный ответ. При падении или остановке движка CLI сообщает этап отказа.
+Повторная команда `mcp-core-check core` проходит и при остановленном движке.
+
+## Проверить границу локального доступа
+
+Для проверки SC-006 запустить отдельный экземпляр MCP-сервера на фиксированном
+порту. Сервер объявляет `http://127.0.0.1:8765/mcp`:
+
+```bash
+KIT="$PWD/offline-kit"
+RUNTIME="$PWD/mcp-core-runtime"
+"$RUNTIME/venv/bin/mcp-core" --config "$KIT/examples/demo.toml" --port 8765
+```
+
+На целевой машине подтвердить через `ss -lntp` привязку MCP только к
+`127.0.0.1:8765`, а движка только к `127.0.0.1:9931`. Положительную проверку
+каталога и вызова даёт `mcp-core-check core`. Проверить отклонение чужого
+`Origin` локальным запросом к запущенному экземпляру:
+
+```bash
+curl --noproxy '*' --max-time 5 --silent --show-error --output /dev/null \
+  --write-out '%{http_code}\n' \
+  --header 'Accept: application/json, text/event-stream' \
+  --header 'Content-Type: application/json' \
+  --header 'Origin: http://outside.example' \
+  --data '{"jsonrpc":"2.0","method":"server/discover","id":1}' \
+  http://127.0.0.1:8765/mcp
+```
+
+Ожидается HTTP 403. Для SC-005 и SC-006 на второй машине проверить доступность
+целевой машины в изолированной сети и обратиться к обоим портам по её адресу:
+
+```bash
+read -r -p 'IPv4 целевой машины: ' target_ip
+ping -c 1 "$target_ip"
+curl --noproxy '*' --connect-timeout 3 --max-time 5 \
+  --silent --show-error --output /dev/null "http://$target_ip:9931/health"
+curl --noproxy '*' --connect-timeout 3 --max-time 5 \
+  --silent --show-error --output /dev/null "http://$target_ip:8765/mcp"
+```
+
+При подтверждённом сетевом маршруте оба запроса завершаются ошибками соединения
+без HTTP-ответов. Локальный запрос к модели из предыдущего шага успешен.
+
+В отчёте приёмки зафиксировать фактические версии ОС, Python, движка, хоста и MCP,
+хеши файлов, флаги запуска модели и результат каждой проверки SC-001–SC-006.
