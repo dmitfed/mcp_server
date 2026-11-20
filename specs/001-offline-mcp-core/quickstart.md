@@ -8,11 +8,21 @@
 
 ## Подготовить комплект
 
-Целевой образ — Debian 13 x86-64 (amd64) с Python ≥ 3.13, модулем `venv`,
-системными библиотеками, `tar`, `sha256sum`, `curl`, `ldd` и `ss`. Для первого
-прогона использовать системные `python3` и `python3-venv`. Подготовить образ
-и пакеты можно на подключённой машине. Зафиксировать точные версии окружения
-и список системных библиотек, полученный при проверке бинарника.
+### Базовый образ
+
+Подготовить Debian 13 x86-64 (amd64) с Python ≥ 3.13. Для первого прогона
+использовать системные пакеты `python3` и `python3-venv`. В образе нужны
+`bash`, `tar`, `gzip`, `coreutils` для `sha256sum`, `curl`, `libc-bin` для
+`ldd` и `iproute2` для `ss`. На второй машине для сетевой проверки нужны
+`curl` и `iputils-ping`.
+
+До офлайн-приёмки зафиксировать идентификатор образа и перечень системных
+пакетов с точными версиями. В перечень включить пакеты библиотек, необходимых
+архиву движка на этом образе. При подготовке образа их определяют по проверке
+`ldd` и загрузке движка на Debian 13. Сохранить перечень вместе с описанием
+профиля приёмки. [Пакет libc-bin](https://packages.debian.org/trixie/libc-bin) · [Пакет iputils-ping](https://packages.debian.org/trixie/iputils-ping)
+
+### Переносимый комплект
 
 Сборка на Debian 13 amd64 выпускает wheel проекта с обоими CLI, скачивает
 wheels всех зависимостей для целевого интерпретатора и формирует
@@ -52,26 +62,35 @@ hf download Qwen/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf \
 
 ## Установить и проверить ядро без модели
 
-Работать на чистой машине из подготовленного образа без маршрута в интернет.
-Сохранить loopback. Для SC-005 и SC-006 подготовить вторую машину в изолированной
-локальной сети с маршрутом к целевой машине.
+Начать прогон на зафиксированном базовом образе без маршрута в интернет.
+Использовать только задокументированные системные предпосылки и переносимый
+комплект. Для каждого прогона создать новый каталог исполнения и новый `venv`.
+Предустановки проекта, предыдущие окружения и внешние кэши не входят в
+предпосылки. Если путь каталога уже занят, выбрать другой путь и использовать
+его во всех командах текущего прогона. Сохранить loopback. Для SC-005 и SC-006
+подготовить вторую машину в изолированной сети с маршрутом к целевой машине.
 
 ```bash
 KIT="$PWD/offline-kit"
 RUNTIME="$PWD/mcp-core-runtime"
 PYTHON_BIN="${MCP_CORE_PYTHON:-python3}"
-(cd "$KIT" && sha256sum --check SHA256SUMS)
-"$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 13))'
-"$PYTHON_BIN" -m venv "$RUNTIME/venv"
-"$RUNTIME/venv/bin/python" -m pip --isolated install \
-  --no-index --find-links "$KIT/wheelhouse" --only-binary=:all: --require-hashes \
-  -r "$KIT/requirements.lock"
-"$RUNTIME/venv/bin/python" -m pip check
-"$RUNTIME/venv/bin/mcp-core" --version
-"$RUNTIME/venv/bin/mcp-core-check" --version
-"$RUNTIME/venv/bin/mcp-core-check" core \
-  --empty-config "$KIT/examples/empty.toml" --demo-config "$KIT/examples/demo.toml"
-(cd "$KIT" && "$RUNTIME/venv/bin/python" -m unittest discover -s tests -v)
+(
+  set -e
+  (cd "$KIT" && sha256sum --check SHA256SUMS)
+  "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 13))'
+  mkdir -- "$RUNTIME"
+  "$PYTHON_BIN" -m venv "$RUNTIME/venv"
+  "$RUNTIME/venv/bin/python" -m pip --isolated install \
+    --no-cache-dir --no-index --find-links "$KIT/wheelhouse" \
+    --only-binary=:all: --require-hashes \
+    -r "$KIT/requirements.lock"
+  "$RUNTIME/venv/bin/python" -m pip check
+  "$RUNTIME/venv/bin/mcp-core" --version
+  "$RUNTIME/venv/bin/mcp-core-check" --version
+  "$RUNTIME/venv/bin/mcp-core-check" core \
+    --empty-config "$KIT/examples/empty.toml" --demo-config "$KIT/examples/demo.toml"
+  (cd "$KIT" && "$RUNTIME/venv/bin/python" -m unittest discover -s tests -v)
+)
 ```
 
 Ожидаемые результаты:
@@ -128,21 +147,28 @@ RUNTIME="$PWD/mcp-core-runtime"
 
 На целевой машине подтвердить через `ss -lntp` привязку MCP только к
 `127.0.0.1:8765`, а движка только к `127.0.0.1:9931`. Положительную проверку
-каталога и вызова даёт `mcp-core-check core`. Проверить отклонение чужого
-`Origin` локальным запросом к запущенному экземпляру:
+каталога и вызова даёт `mcp-core-check core`. Проверить правила для `Host`
+и `Origin` локальными запросами к запущенному экземпляру:
 
 ```bash
-curl --noproxy '*' --max-time 5 --silent --show-error --output /dev/null \
-  --write-out '%{http_code}\n' \
-  --header 'Accept: application/json, text/event-stream' \
-  --header 'Content-Type: application/json' \
-  --header 'Origin: http://outside.example' \
-  --data '{"jsonrpc":"2.0","method":"server/discover","id":1}' \
-  http://127.0.0.1:8765/mcp
+probe_mcp() {
+  curl --http1.1 --noproxy '*' --max-time 5 --silent --show-error --output /dev/null \
+    --write-out '%{http_code}\n' \
+    --header 'Accept: application/json, text/event-stream' \
+    --header 'Content-Type: application/json' \
+    "$@" --data '{"jsonrpc":"2.0","method":"server/discover","id":1}' \
+    http://127.0.0.1:8765/mcp
+}
+probe_mcp --header 'Host: outside.example'
+probe_mcp --header 'Host:'
+probe_mcp --header 'Origin: http://outside.example'
+probe_mcp --header 'Origin;'
 ```
 
-Ожидается HTTP 403. Для SC-005 и SC-006 на второй машине проверить доступность
-целевой машины в изолированной сети и обратиться к обоим портам по её адресу:
+В том же порядке ожидаются HTTP 421 для неверного `Host`, HTTP 400 или 421 для
+отсутствующего `Host`, HTTP 403 для чужого `Origin` и HTTP 403 для пустого
+`Origin`. Для SC-005 и SC-006 на второй машине проверить доступность целевой
+машины в изолированной сети и обратиться к обоим портам по её адресу:
 
 ```bash
 read -r -p 'IPv4 целевой машины: ' target_ip
@@ -154,7 +180,18 @@ curl --noproxy '*' --connect-timeout 3 --max-time 5 \
 ```
 
 При подтверждённом сетевом маршруте оба запроса завершаются ошибками соединения
-без HTTP-ответов. Локальный запрос к модели из предыдущего шага успешен.
+без HTTP-ответов. Отказ соединения с MCP-портом исключает как получение каталога,
+так и вызов инструмента. Локальный запрос к модели из предыдущего шага успешен.
 
-В отчёте приёмки зафиксировать фактические версии ОС, Python, движка, хоста и MCP,
-хеши файлов, флаги запуска модели и результат каждой проверки SC-001–SC-006.
+## Зафиксировать результаты приёмки
+
+В отчёте указать фактическую [конфигурацию интеграции](data-model.md) для прогона.
+
+- Идентификатор базового образа, ссылку на перечень системных пакетов с версиями
+  и фактические версии ОС, Python, движка, хоста и MCP.
+- Имя и ревизию модели, SHA-256 файла GGUF, хеш ведомости `SHA256SUMS` из комплекта
+  и хеши фактически использованных файлов конфигурации и манифестов модулей.
+- Эффективные адреса, порты и пути обоих соединений, способ выбора MCP-порта
+  и флаги запуска движка. Для проверки сетевой границы указать отдельно
+  фиксированный MCP-порт.
+- Результаты SC-001–SC-006 с наблюдениями для каждой проверки.
