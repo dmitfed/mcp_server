@@ -208,6 +208,9 @@ cp --update=none -- "$MCP_KIT/examples/demo.toml" "$MCP_KIT/examples/demo-module
 подготовленных локальных wheels и явно указать JSON-манифест в TOML.
 [Конфигурация сервера](contracts/server-mcp.md) · [Контракт модулей](contracts/module-v1.md)
 
+Полный пример Python-пакета, манифеста и проверки через MCP приведён в
+[руководстве по добавлению ZIP-инструмента](add-zip-tool.md).
+
 ## 7. Проверьте связку с моделью при необходимости
 
 Для этого шага нужен полный комплект с каталогами `engine/` и `model/`.
