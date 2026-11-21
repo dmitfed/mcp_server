@@ -50,10 +50,16 @@ MCP-результат содержит структурированный об�
 
 ## Первая конфигурация с моделью
 
-**Решение** Кандидат на приёмку на Debian 13 amd64 — `llama.cpp v1.0.0 (b12359)`
-(CPU), `Qwen3-4B-Q4_K_M.gguf` от Qwen и проверочная CLI `mcp-core-check` версии
-`0.1.0`. Клиент работает по Streamable HTTP с MCP-сервером и по HTTP с
-`127.0.0.1:9931/v1/chat/completions`. Точный запуск и проверка приведены в
+**Поддерживаемая конфигурация** Офлайн-приёмку SC-001–SC-006 прошли Debian 13.7
+amd64, CPython 3.13.5, CPU-сборка llama.cpp b12359 из релиза v1.0.0,
+`Qwen3-4B-Q4_K_M.gguf` от Qwen и проверочная CLI `mcp-core-check` версии
+`0.1.0`. Бинарник сообщает `1.0.0-dev (build 12359, commit b1b770d90)`.
+Клиент работает по Streamable HTTP MCP `2026-07-28` и по HTTP с
+`127.0.0.1:9931/v1/chat/completions`. В прогоне 21 ноября 2026 года цель
+работала в изолированной сети, а подключение к обоим портам проверялось из
+гостевой машины QEMU с собственным ядром и подтверждённым маршрутом.
+Локальный отчёт прогона хранится в `mcp-core-runtime/acceptance-report.md`.
+Точный запуск и проверка приведены в
 [quickstart](quickstart.md), порядок передачи результата — в [контракте хоста](contracts/acceptance-host.md).
 
 | Артефакт | Источник | SHA-256 |
@@ -67,7 +73,7 @@ MCP-результат содержит структурированный об�
 и офлайн-диалог на целевой системе. Версия
 движка поддерживает явные офлайн-параметры, шаблон инструментов и режимы
 `tool_choice` для контролируемого диалога. Проверочная CLI использует MCP SDK и
-HTTP-клиент стандартной библиотеки. Это позволяет закрепить версию хоста вместе
+клиент `httpx2`. Это позволяет закрепить версию хоста вместе
 с проектным wheel и наблюдать результат именно выполненного MCP-вызова.
 [Релиз v1.0.0](https://github.com/ggml-org/llama.cpp/releases/tag/v1.0.0) · [Сервер llama.cpp b12359](https://github.com/ggml-org/llama.cpp/blob/b12359/tools/server/README.md) · [Вызов функций llama.cpp](https://github.com/ggml-org/llama.cpp/blob/b12359/docs/function-calling.md) · [Выбор инструмента в коде движка](https://github.com/ggml-org/llama.cpp/blob/b12359/common/chat.cpp) · [Qwen3 и вызовы инструментов](https://huggingface.co/Qwen/Qwen3-4B#agentic-use)
 

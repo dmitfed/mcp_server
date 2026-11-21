@@ -37,6 +37,7 @@ wheels всех зависимостей для целевого интерпр�
 offline-kit/
 ├── SHA256SUMS
 ├── requirements.lock
+├── base-image.txt               # идентификатор образа и точные версии пакетов
 ├── wheelhouse/
 ├── examples/                    # empty.toml, demo.toml, demo-module.json
 ├── tests/                       # офлайн-проверки ядра и их фикстуры
@@ -58,9 +59,15 @@ hf download Qwen/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf \
   --revision a9a60d009fa7ff9606305047c2bf77ac25dbec49 --local-dir "$INPUTS/model"
 ```
 
-Сверить архив и GGUF со значениями в исследовании и скопировать их в
-`offline-kit/engine/` и `offline-kit/model/`. Записать в `SHA256SUMS` хеши
-переносимых файлов с путями относительно корня комплекта и перенести комплект.
+На подключённой машине с Debian 13 amd64 создать комплект из корня репозитория.
+Указать фактический идентификатор подготовленного образа в `IMAGE_ID`.
+
+```bash
+python3 scripts/build-offline-kit.py offline-kit --image-id "$IMAGE_ID" --inputs "$INPUTS"
+```
+
+Скрипт сверяет SHA-256 архива и GGUF со значениями в исследовании, собирает
+wheelhouse и формирует ведомость `SHA256SUMS`. Перенести весь каталог `offline-kit/`.
 Для целевой машины требуются сам GGUF и описанные артефакты. Команда `hf`
 выполняется только на машине подготовки. Имя CPU-архива содержит `ubuntu`
 по имени upstream-сборки. Проверка загрузки бинарника выполняется на Debian 13.
@@ -115,7 +122,7 @@ PYTHON_BIN="${MCP_CORE_PYTHON:-python3}"
 
 ```bash
 mkdir -p "$RUNTIME/engine"
-tar -xzf "$KIT/engine/llama-b12359-bin-ubuntu-x64.tar.gz" -C "$RUNTIME/engine"
+tar --no-same-owner -xzf "$KIT/engine/llama-b12359-bin-ubuntu-x64.tar.gz" -C "$RUNTIME/engine"
 LLAMA_SERVER="$RUNTIME/engine/llama-b12359/llama-server"
 ldd "$LLAMA_SERVER"
 "$LLAMA_SERVER" --version

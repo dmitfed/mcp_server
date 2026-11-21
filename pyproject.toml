@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-offline-core"
+version = "0.1.0"
+description = "Local Streamable HTTP MCP server for offline tools"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp==2.3.0",
+    "jsonschema==4.26.0",
+    "referencing",
+    "httpx2",
+    "uvicorn>=0.38,<1",
+]
+
+[project.scripts]
+mcp-core = "mcp_offline_core.server:main"
+mcp-core-check = "mcp_offline_core.acceptance:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
