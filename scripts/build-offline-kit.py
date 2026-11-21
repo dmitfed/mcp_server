@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a fresh wheelhouse and a pinned Debian offline kit."""
+"""Собрать комплект для офлайн-установки на Debian с зафиксированными хешами."""
 
 import argparse
 from email.parser import BytesParser
@@ -20,11 +20,18 @@ ASSETS = {
 
 
 def sha256(path: Path) -> str:
+    """Вычислить SHA-256 потоковым чтением, в том числе для большого файла GGUF."""
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def write_lock(wheelhouse: Path, output: Path) -> None:
+    """Зафиксировать имена, точные версии и SHA-256 из собранного wheelhouse.
+
+    Имена и версии берутся из метаданных внутри wheel. Для каждого пакета
+    допускается один wheel, а wheel самого проекта должен быть в комплекте.
+    Сортировка делает порядок строк стабильным.
+    """
     requirements = {}
     for wheel in sorted(wheelhouse.glob("*.whl")):
         with ZipFile(wheel) as archive:
@@ -40,6 +47,12 @@ def write_lock(wheelhouse: Path, output: Path) -> None:
 
 
 def main() -> None:
+    """Собрать новый wheelhouse и записать проверяемые данные для переноса.
+
+    Режимы `core` и `modules` собирают промежуточные наборы приёмки.
+    Режим `release` дополнительно проверяет и копирует архив движка и GGUF.
+    Ведомость SHA-256 формируется после копирования всех файлов.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--image-id", required=True, help="identifier of the prepared Debian base image")
@@ -52,7 +65,7 @@ def main() -> None:
             if sha256(arguments.inputs / name) != digest:
                 parser.error(f"checksum mismatch for {name}")
 
-    # Refuse to mix artifacts from builds with the same package version.
+    # Новый каталог исключает смешивание wheel разных сборок с той же версией.
     destination.mkdir()
     wheelhouse = destination / "wheelhouse"
     wheelhouse.mkdir()

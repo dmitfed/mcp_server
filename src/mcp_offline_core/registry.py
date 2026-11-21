@@ -1,4 +1,4 @@
-"""Read the local configuration and validate module manifests."""
+"""Загрузка конфигурации и проверка манифестов локальных модулей."""
 
 from dataclasses import dataclass
 import json
@@ -14,11 +14,13 @@ from referencing.jsonschema import DRAFT202012
 
 
 class ConfigurationError(ValueError):
-    """A configuration error whose message is safe for startup diagnostics."""
+    """Ошибка конфигурации с сообщением для диагностики запуска."""
 
 
 @dataclass(frozen=True)
 class Configuration:
+    """Проверенные пути манифестов, ограничения вызовов и полномочия оператора."""
+
     manifests: tuple[Path, ...]
     disabled_tools: frozenset[str]
     grants: frozenset[str]
@@ -28,6 +30,8 @@ class Configuration:
 
 @dataclass(frozen=True)
 class RegisteredTool:
+    """Метаданные из манифеста и валидатор аргументов для повторных вызовов."""
+
     name: str
     description: str
     handler: str
@@ -40,12 +44,23 @@ _HANDLER = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", re.ASCII)
 
 
 def _string_list(value: object, field: str) -> tuple[str, ...]:
+    """Проверить список строк TOML и указать имя поля в случае ошибки.
+
+    Пустые и пробельные элементы отклоняются. Исходное написание
+    остальных элементов сохраняется для точного сравнения имён.
+    """
     if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
         raise ConfigurationError(f"{field} must be a list of nonempty strings")
     return tuple(value)
 
 
 def load_configuration(path: Path) -> Configuration:
+    """Прочитать TOML v1 и подготовить параметры для запуска экземпляра.
+
+    Относительные пути манифестов отсчитываются от каталога конфига.
+    Если блок исполнения отсутствует, действуют таймаут 10 секунд и четыре
+    слота. Содержимое файла исключается из диагностических сообщений.
+    """
     try:
         with path.open("rb") as stream:
             config = tomllib.load(stream)
@@ -89,10 +104,17 @@ def load_configuration(path: Path) -> Configuration:
 
 
 def _reject_nonfinite(value: str):
+    """Отклонить NaN и бесконечности, которые стандартный декодер Python допускает по умолчанию."""
     raise ValueError(f"{value} is not a JSON value")
 
 
 def _check_schema_references(schema, resolver) -> None:
+    """Проверить разрешимость локальных ссылок схемы Draft 2020-12.
+
+    Обход ограничен вложенными схемами, определёнными этим диалектом. На
+    каждом уровне учитывается область видимости ресурса, а ссылки с адресом
+    вне текущего документа отклоняются до запуска сервера.
+    """
     if isinstance(schema, bool):
         return
     if "$schema" in schema and schema["$schema"] != "https://json-schema.org/draft/2020-12/schema":
@@ -109,6 +131,12 @@ def _check_schema_references(schema, resolver) -> None:
 
 
 def _make_tool(raw, source: Path) -> RegisteredTool:
+    """Проверить одно объявление инструмента и подготовить офлайн-валидатор.
+
+    Адрес обработчика проверяется как строка. Импорт функции произойдёт
+    при вызове в дочернем процессе. Корнем входной схемы должен быть объект,
+    чтобы формат соответствовал аргументам MCP.
+    """
     if not isinstance(raw, dict):
         raise ConfigurationError(f"invalid tool in {str(source)!r}")
     name = raw.get("name")
@@ -125,7 +153,7 @@ def _make_tool(raw, source: Path) -> RegisteredTool:
         raise ConfigurationError(f"tool {name!r} input_schema must describe an object")
     try:
         Draft202012Validator.check_schema(schema)
-        # Supplying an empty registry explicitly disables remote retrieval by jsonschema.
+        # Пустой реестр без функции загрузки исключает сетевое разрешение ссылок.
         offline = Registry()
         resolver = offline.resolver_with_root(Resource(schema, DRAFT202012))
         _check_schema_references(schema, resolver)
@@ -135,6 +163,12 @@ def _make_tool(raw, source: Path) -> RegisteredTool:
 
 
 def load_registry(config: Configuration) -> dict[str, RegisteredTool]:
+    """Загрузить явно перечисленные манифесты и собрать общий каталог по имени.
+
+    Уникальность идентификаторов модулей и имён инструментов проверяется
+    во всех манифестах, включая отключённые инструменты. Отключённые имена
+    остаются в реестре, а фильтрацию при публикации выполняет сервер.
+    """
     tools = {}
     modules = set()
     for source in config.manifests:

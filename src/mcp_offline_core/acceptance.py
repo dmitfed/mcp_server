@@ -1,4 +1,4 @@
-"""Local acceptance host for the MCP core and the first model profile."""
+"""Проверочный MCP-хост для ядра и первого профиля с моделью."""
 
 import argparse
 import asyncio
@@ -25,10 +25,15 @@ DEMO_RESULT = {"echo": "mcp-check-001"}
 
 
 class CheckError(RuntimeError):
-    """A fixed description of a failed acceptance step."""
+    """Фиксированная диагностика этапа, на котором остановилась проверка."""
 
 
 def _read_url(record: bytes) -> str:
+    """Извлечь из стартовой JSON-строки точный адрес локального MCP.
+
+    Допустим только `http://127.0.0.1:<порт>/mcp` с ненулевым портом.
+    Сравнение с канонической строкой исключает учётные данные, параметры и фрагменты.
+    """
     url = json.loads(record)["mcp_url"]
     address = urlsplit(url)
     port = address.port
@@ -38,18 +43,33 @@ def _read_url(record: bytes) -> str:
 
 
 def _only_connect_errors(error: Exception) -> bool:
+    """Определить, состоит ли исключение только из ошибок установки соединения.
+
+    SDK может обернуть сбой транспорта в группу исключений. Повтор при
+    discovery допустим, только если во всей группе нет ошибок другого типа.
+    """
     if isinstance(error, ExceptionGroup):
         return error.subgroup(lambda exc: not isinstance(exc, (BaseExceptionGroup, httpx2.ConnectError))) is None
     return isinstance(error, httpx2.ConnectError)
 
 
 async def _reject_redirect(response: httpx2.Response) -> None:
-    # The SDK can follow same-origin redirects independently of httpx2.
+    """Отклонить переадресацию до того, как SDK сможет за ней последовать.
+
+    SDK может следовать переадресациям того же источника даже при
+    `follow_redirects=False` у клиента httpx2.
+    """
     if response.is_redirect:
         response.raise_for_status()
 
 
 async def _discover(stack: AsyncExitStack, http: httpx2.AsyncClient, url: str, process) -> Client:
+    """Открыть SDK-клиент и подтвердить версию MCP и возможность `tools`.
+
+    Стартовая строка может появиться раньше, чем Uvicorn начнёт принимать
+    подключения. Ошибку установки соединения повторяем через 25 мс, пока
+    дочерний процесс жив и действует общий дедлайн запуска.
+    """
     while process.returncode is None:
         try:
             client = await stack.enter_async_context(
@@ -67,6 +87,10 @@ async def _discover(stack: AsyncExitStack, http: httpx2.AsyncClient, url: str, p
 
 
 async def _stop(process: asyncio.subprocess.Process) -> None:
+    """Завершить дочерний MCP-сервер и дождаться выхода процесса.
+
+    Если сервер не завершился за три секунды после SIGTERM, посылается SIGKILL.
+    """
     if process.returncode is None:
         with suppress(ProcessLookupError):
             process.terminate()
@@ -81,6 +105,12 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
 
 @asynccontextmanager
 async def _mcp(config: Path):
+    """Управлять временным MCP-сервером и его HTTP-клиентом.
+
+    Сервер запускается из того же Python-окружения с портом, выбранным ОС.
+    На запуск, чтение адреса и discovery вместе отводится 10 секунд.
+    При выходе закрываются соединения, затем завершается дочерний процесс.
+    """
     executable = Path(sysconfig.get_path("scripts")).absolute() / "mcp-core"
     deadline = asyncio.get_running_loop().time() + 10
     started = asyncio.create_task(asyncio.create_subprocess_exec(
@@ -91,6 +121,7 @@ async def _mcp(config: Path):
     try:
         try:
             async with asyncio.timeout_at(deadline):
+                # Даже после таймаута задача запуска нужна, чтобы собрать созданный процесс.
                 process = await asyncio.shield(started)
                 url = _read_url(await process.stdout.readline())
                 http = await stack.enter_async_context(httpx2.AsyncClient(
@@ -111,6 +142,7 @@ async def _mcp(config: Path):
 
 
 async def _call_demo(client: Client, arguments: dict) -> dict:
+    """Выполнить реальный вызов `demo_echo` и сверить структурированный результат."""
     result = await client.call_tool(DEMO_TOOL, arguments)
     if result.is_error or result.structured_content != DEMO_RESULT:
         raise CheckError("unexpected demo_echo result")
@@ -118,6 +150,11 @@ async def _call_demo(client: Client, arguments: dict) -> dict:
 
 
 async def _check_core(empty: Path, demo: Path) -> None:
+    """Проверить два независимых запуска ядра без обращения к модели.
+
+    Первый должен вернуть пустой каталог, второй публикует `demo_echo` и
+    возвращает ожидаемое эхо. Сводка содержит адреса и результат обеих проверок.
+    """
     async with _mcp(empty) as (client, empty_url), asyncio.timeout(15):
         if (await client.list_tools()).tools:
             raise CheckError("empty configuration returned tools")
@@ -132,6 +169,11 @@ async def _check_core(empty: Path, demo: Path) -> None:
 
 
 async def _model_request(http: httpx2.AsyncClient, parameters: dict, messages: list, choice: str) -> dict:
+    """Отправить один запрос локальной модели и прочитать сообщение ассистента.
+
+    На этап отводится 120 секунд. Ошибки HTTP и неожиданный формат ответа
+    сообщаются с указанием значения `tool_choice`.
+    """
     try:
         async with asyncio.timeout(120):
             response = await http.post(MODEL_URL, json={
@@ -147,6 +189,11 @@ async def _model_request(http: httpx2.AsyncClient, parameters: dict, messages: l
 
 
 def _read_tool_call(message: dict) -> tuple[str, dict]:
+    """Проверить, что модель выбрала один `demo_echo` с контрольным аргументом.
+
+    Возвращаются декодированные аргументы и исходный ID вызова, который
+    связывает результат инструмента со вторым запросом модели.
+    """
     try:
         [call] = message["tool_calls"]
         if call["type"] != "function" or call["function"]["name"] != DEMO_TOOL:
@@ -161,6 +208,12 @@ def _read_tool_call(message: dict) -> tuple[str, dict]:
 
 
 async def _check_e2e(config: Path) -> None:
+    """Проверить полный диалог между локальной моделью, хостом и MCP-сервером.
+
+    Хост получает описание инструмента из живого каталога, передаёт его
+    модели, исполняет выбранный вызов через MCP и отправляет фактический
+    результат с исходным ID. Проверка завершается после непустого ответа модели.
+    """
     async with (
         _mcp(config) as (client, mcp_url),
         httpx2.AsyncClient(trust_env=False, follow_redirects=False, timeout=120) as http,
@@ -170,6 +223,7 @@ async def _check_e2e(config: Path) -> None:
             tool = next((tool for tool in listing.tools if tool.name == DEMO_TOOL), None)
         if tool is None:
             raise CheckError("demo_echo is absent from MCP tools/list")
+        # HTTP API модели ожидает описание функции в своём формате. Схема берётся из MCP.
         parameters = {
             "model": "qwen3-4b", "stream": False, "temperature": 0, "seed": 42, "max_tokens": 128,
             "tools": [{
@@ -194,6 +248,11 @@ async def _check_e2e(config: Path) -> None:
 
 
 def main() -> int:
+    """Разобрать подкоманду приёмки и вернуть код для оболочки.
+
+    `core` проверяет ядро отдельно, `e2e` включает модель.
+    При ошибке CLI печатает короткую диагностику этапа в stderr и возвращает 1.
+    """
     parser = argparse.ArgumentParser(prog="mcp-core-check")
     parser.add_argument("--version", action="version", version=version("mcp-offline-core"))
     commands = parser.add_subparsers(dest="command", required=True)

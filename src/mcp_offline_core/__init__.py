@@ -1,1 +1,1 @@
-"""Local MCP server and its offline acceptance client."""
+"""Локальный MCP-сервер и клиент для его офлайн-приёмки."""
