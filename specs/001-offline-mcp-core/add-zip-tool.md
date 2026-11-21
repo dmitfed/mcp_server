@@ -12,125 +12,30 @@
 `output/` и возвращает объект с относительным каталогом и списком файлов.
 Куда положить архив и где хранить результаты, задаёт оператор.
 
-## 1. Создайте отдельный Python-пакет
+## 1. Найдите исходники Python-пакета
 
-В отдельной рабочей папке `mcp-zip-tool/` создайте три файла.
+Готовый пакет `mcp-zip-tools` расположен в каталоге `tools/zip/`.
 
 ```text
-mcp-zip-tool/
+tools/zip/
 ├── pyproject.toml
 ├── mcp_zip_tools.py
-└── zip-module.json
+├── zip-module.json
+└── tests/
 ```
 
-В `pyproject.toml` укажите имя пакета и один Python-модуль. При выполнении
+В `pyproject.toml` указаны имя пакета и один Python-модуль. При выполнении
 инструмент использует только стандартную библиотеку.
 
-```toml
-[build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+[Исходный pyproject.toml](../../tools/zip/pyproject.toml)
 
-[project]
-name = "mcp-zip-tools"
-version = "0.1.0"
-requires-python = ">=3.13"
-
-[tool.setuptools]
-py-modules = ["mcp_zip_tools"]
-```
-
-## 2. Напишите обработчик
+## 2. Разберите обработчик
 
 Ядро вызывает синхронную функцию `extract_zip(arguments, context)`.
 Она получает проверенный объект аргументов и неизменяемое множество
 `context.grants`. Проверку полномочия ставим перед обращением к файлам.
 
-В `mcp_zip_tools.py` запишите следующий код.
-
-```python
-import os
-from pathlib import Path
-import re
-import shutil
-import stat
-from tempfile import mkdtemp
-from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
-
-
-MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
-MAX_OUTPUT_BYTES = 32 * 1024 * 1024
-MAX_ENTRIES = 200
-
-
-def _entry_path(entry: ZipInfo) -> str:
-    """Проверить имя и тип записи до создания файла или каталога."""
-    name = entry.orig_filename
-    if len(name.encode("utf-8")) > 240 or any(char in name for char in ("\\", ":", "\x00")):
-        raise ValueError("Недопустимое имя записи ZIP")
-    relative = name.removesuffix("/")
-    if any(part in ("", ".", "..") for part in relative.split("/")):
-        raise ValueError("Недопустимый путь в ZIP")
-    mode = stat.S_IFMT(entry.external_attr >> 16)
-    expected = stat.S_IFDIR if entry.is_dir() else stat.S_IFREG
-    if mode not in (0, expected):
-        raise ValueError("ZIP содержит ссылку или специальный файл")
-    if entry.compress_type not in (ZIP_STORED, ZIP_DEFLATED):
-        raise ValueError("Неподдерживаемый метод сжатия")
-    return relative
-
-
-def extract_zip(arguments, context):
-    """Распаковать один ZIP и вернуть список обычных файлов."""
-    if "zip.extract" not in context.grants:
-        raise PermissionError("Требуется полномочие zip.extract")
-    name = arguments["archive"]
-    if re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,100}\.zip", name) is None:
-        raise ValueError("Нужно имя файла ZIP из каталога inbox")
-
-    root = Path(os.environ["MCP_ZIP_ROOT"]).resolve(strict=True)
-    output = root / "output"
-    archive_fd = os.open(root / "inbox" / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(archive_fd, "rb") as source:
-        source_info = os.fstat(source.fileno())
-        if not stat.S_ISREG(source_info.st_mode) or source_info.st_size > MAX_ARCHIVE_BYTES:
-            raise ValueError("Требуется обычный ZIP-файл размером до 8 МиБ")
-        with ZipFile(source) as archive:
-            entries = archive.infolist()
-            if len(entries) > MAX_ENTRIES or sum(entry.file_size for entry in entries) > MAX_OUTPUT_BYTES:
-                raise ValueError("Превышен лимит распаковки")
-
-            run = Path(mkdtemp(prefix="zip-", dir=output))
-            staging = run / ".staging"
-            files = []
-            seen = set()
-            written = 0
-            try:
-                staging.mkdir()
-                for entry in entries:
-                    relative = _entry_path(entry)
-                    if relative in seen:
-                        raise ValueError("Повторяющийся путь в ZIP")
-                    seen.add(relative)
-                    target = staging / relative
-                    if entry.is_dir():
-                        target.mkdir(parents=True, exist_ok=True)
-                        continue
-
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with archive.open(entry) as member, target.open("xb") as destination:
-                        while chunk := member.read(64 * 1024):
-                            written += len(chunk)
-                            if written > MAX_OUTPUT_BYTES:
-                                raise ValueError("Превышен лимит распакованных байтов")
-                            destination.write(chunk)
-                    files.append(relative)
-                staging.rename(run / "files")
-            except BaseException:
-                shutil.rmtree(run, ignore_errors=True)
-                raise
-    return {"directory": f"output/{run.name}/files", "files": sorted(files)}
-```
+[Исходный код обработчика](../../tools/zip/mcp_zip_tools.py)
 
 Пути внутри ZIP могут содержать вложенные каталоги. Обработчик отклоняет
 абсолютные пути, компоненты `..`, ссылки, специальные файлы и повторяющиеся
@@ -140,53 +45,33 @@ def extract_zip(arguments, context):
 по таймауту может остаться временный каталог `.staging`. Проверяйте
 такие каталоги после остановки экземпляра сервера.
 
-## 3. Опишите инструмент в манифесте
+## 3. Проверьте манифест
 
-В `zip-module.json` объявите один инструмент. Поле `handler` связывает
+В `zip-module.json` объявлен один инструмент. Поле `handler` связывает
 импортируемый модуль `mcp_zip_tools` с функцией `extract_zip`.
 Схема принимает только одно поле `archive`.
 
-```json
-{
-  "contract_version": 1,
-  "module_id": "zip_tools",
-  "tools": [
-    {
-      "name": "zip_extract",
-      "description": "Распаковать локальный ZIP из inbox и вернуть список файлов.",
-      "handler": "mcp_zip_tools:extract_zip",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "archive": {
-            "type": "string",
-            "maxLength": 105,
-            "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,100}\\.zip$",
-            "description": "Имя ZIP в inbox, например sample.zip."
-          }
-        },
-        "required": ["archive"],
-        "additionalProperties": false
-      }
-    }
-  ]
-}
-```
+[Готовый JSON-манифест](../../tools/zip/zip-module.json)
 
 ## 4. Соберите wheel и установите его в окружение MCP
 
-На машине подготовки запустите из каталога `mcp-zip-tool/`.
+На машине подготовки с Python 3.13 и `pip` выполните из корня
+репозитория. Для каждой сборки используйте свободный каталог для wheel
+и манифеста.
 
 ```bash
-python3 -m pip wheel --no-deps --wheel-dir dist .
-cp zip-module.json dist/
 (
+  set -eu
+  cd tools/zip
+  mkdir -- dist
+  python3 -m pip wheel --no-deps --wheel-dir dist .
+  cp zip-module.json dist/
   cd dist
   sha256sum mcp_zip_tools-0.1.0-py3-none-any.whl zip-module.json > SHA256SUMS
 )
 ```
 
-Перенесите содержимое `dist/` на офлайн-машину, например в
+Перенесите содержимое `tools/zip/dist/` на офлайн-машину, например в
 `$HOME/mcp-offline/mcp-zip-tool/`. Ниже предполагается, что ядро уже
 установлено. Если использовали другие пути, подставьте их.
 [Установка ядра](deployment.md).
@@ -298,3 +183,7 @@ PY
 папкам и корректность ZIP. При отсутствии `zip.extract` ядро фиксирует
 `permission_denied` в stderr. Длительность вызова ограничена
 `execution.timeout_seconds` в конфигурации сервера.
+
+Для проверки установленного пакета запустите из корня репозитория
+`"$MCP_RUNTIME/venv/bin/python" -m unittest discover -s tools/zip/tests -v`.
+[Тесты ZIP-инструмента](../../tools/zip/tests/test_mcp_zip_tools.py)

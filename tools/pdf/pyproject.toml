@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-pdf-tool"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["pypdf>=7.1.1,<8"]
+
+[tool.setuptools]
+py-modules = ["mcp_pdf_tool"]

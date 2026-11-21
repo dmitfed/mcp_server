@@ -1,0 +1,37 @@
+{
+  "contract_version": 1,
+  "module_id": "pdf_tool",
+  "tools": [
+    {
+      "name": "pdf_read",
+      "description": "Извлечь текст из PDF в локальном каталоге документов.",
+      "handler": "mcp_pdf_tool:read_pdf",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "maxLength": 105,
+            "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,100}\\.pdf$",
+            "description": "Имя локального файла, например sample.pdf."
+          },
+          "start_page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "description": "Первая страница, нумерация с 1."
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 3,
+            "description": "Сколько страниц вернуть за один вызов."
+          }
+        },
+        "required": ["file"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "contract_version": 1,
+  "module_id": "zip_tools",
+  "tools": [
+    {
+      "name": "zip_extract",
+      "description": "Распаковать локальный ZIP из inbox и вернуть список файлов.",
+      "handler": "mcp_zip_tools:extract_zip",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "archive": {
+            "type": "string",
+            "maxLength": 105,
+            "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,100}\\.zip$",
+            "description": "Имя ZIP в inbox, например sample.zip."
+          }
+        },
+        "required": ["archive"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -12,100 +12,33 @@
 Debian 13 amd64 с CPython 3.13 без внешней сети.
 [Развёртывание ядра](deployment.md)
 
-## 1. Создайте Python-пакет и объявите зависимость
+## 1. Найдите исходники Python-пакета и его зависимости
 
-Создайте отдельный каталог с тремя файлами.
+Готовый пакет `mcp-pdf-tool` расположен в каталоге `tools/pdf/`.
 
 ```text
-mcp-pdf-tool/
+tools/pdf/
 ├── pyproject.toml
 ├── mcp_pdf_tool.py
-└── pdf-module.json
+├── pdf-module.json
+└── tests/
 ```
 
-В `pyproject.toml` укажите `pypdf` в `[project].dependencies`. Эта
+В `pyproject.toml` зависимость `pypdf` указана в `[project].dependencies`. Эта
 запись попадёт в метаданные wheel, и `pip` разрешит зависимость при сборке
 комплекта. `setuptools` нужен на этапе сборки, а точная версия
 `pypdf` для развёртывания попадёт в `requirements.lock`.
 [Описание выпуска pypdf 7.1.1](https://pypi.org/project/pypdf/7.1.1/)
 
-```toml
-[build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+[Исходный pyproject.toml](../../tools/pdf/pyproject.toml)
 
-[project]
-name = "mcp-pdf-tool"
-version = "0.1.0"
-requires-python = ">=3.13"
-dependencies = ["pypdf>=7.1.1,<8"]
+## 2. Разберите обработчик
 
-[tool.setuptools]
-py-modules = ["mcp_pdf_tool"]
-```
-
-## 2. Напишите обработчик
-
-Поместите код в `mcp_pdf_tool.py`. Ядро передаёт проверенные аргументы
-и контекст с полномочиями экземпляра. Обработчик проверяет
+Ядро передаёт функции `read_pdf` проверенные аргументы и контекст
+с полномочиями экземпляра. Обработчик проверяет
 `pdf.read` перед открытием файла.
 
-```python
-import os
-from pathlib import Path
-import re
-import stat
-
-from pypdf import PdfReader
-
-
-MAX_PDF_BYTES = 8 * 1024 * 1024
-MAX_CHARS_PER_PAGE = 4_000
-
-
-def read_pdf(arguments, context):
-    """Вернуть текст выбранных страниц и номер для следующего вызова."""
-    if "pdf.read" not in context.grants:
-        raise PermissionError("Требуется полномочие pdf.read")
-
-    filename = arguments["file"]
-    if re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,100}\.pdf", filename) is None:
-        raise ValueError("Ожидается имя PDF из каталога документов")
-
-    start_page = int(arguments.get("start_page", 1))
-    max_pages = int(arguments.get("max_pages", 3))
-    root = Path(os.environ["MCP_PDF_ROOT"]).resolve(strict=True)
-    descriptor = os.open(root / filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as document:
-        info = os.fstat(document.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PDF_BYTES:
-            raise ValueError("Требуется обычный PDF-файл размером до 8 МиБ")
-
-        reader = PdfReader(document, strict=True)
-        if reader.is_encrypted:
-            raise ValueError("Поддерживаются PDF без шифрования")
-
-        page_count = len(reader.pages)
-        if start_page > page_count:
-            raise ValueError("Начальная страница находится за пределами PDF")
-        last_page = min(start_page + max_pages - 1, page_count)
-
-        pages = []
-        for number in range(start_page, last_page + 1):
-            text = reader.pages[number - 1].extract_text().strip()
-            pages.append({
-                "page": number,
-                "text": text[:MAX_CHARS_PER_PAGE],
-                "truncated": len(text) > MAX_CHARS_PER_PAGE,
-            })
-
-    return {
-        "file": filename,
-        "page_count": page_count,
-        "pages": pages,
-        "next_page": last_page + 1 if last_page < page_count else None,
-    }
-```
+[Исходный код обработчика](../../tools/pdf/mcp_pdf_tool.py)
 
 PDF открывается только на чтение. Абсолютные пути, вложенные пути и
 символические ссылки на документы отклоняются. Используйте выделенный
@@ -123,65 +56,27 @@ PDF открывается только на чтение. Абсолютные 
 `text` может быть пустым. Распознавание изображений требует отдельного
 OCR-инструмента. [Извлечение текста в pypdf](https://pypdf.readthedocs.io/en/latest/user/extract-text.html)
 
-## 3. Объявите инструмент в JSON-манифесте
+## 3. Проверьте JSON-манифест
 
-В `pdf-module.json` укажите имя инструмента и ссылку на обработчик
+В `pdf-module.json` указаны имя инструмента и ссылка на обработчик
 в формате `модуль:функция`. Нумерация страниц для клиента начинается с 1.
 Значения `default` описывают поведение для клиента, а обработчик сам
 применяет их для пропущенных аргументов.
 
-```json
-{
-  "contract_version": 1,
-  "module_id": "pdf_tool",
-  "tools": [
-    {
-      "name": "pdf_read",
-      "description": "Извлечь текст из PDF в локальном каталоге документов.",
-      "handler": "mcp_pdf_tool:read_pdf",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "file": {
-            "type": "string",
-            "maxLength": 105,
-            "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,100}\\.pdf$",
-            "description": "Имя локального файла, например sample.pdf."
-          },
-          "start_page": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 1,
-            "description": "Первая страница, нумерация с 1."
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5,
-            "default": 3,
-            "description": "Сколько страниц вернуть за один вызов."
-          }
-        },
-        "required": ["file"],
-        "additionalProperties": false
-      }
-    }
-  ]
-}
-```
+[Готовый JSON-манифест](../../tools/pdf/pdf-module.json)
 
 ## 4. Соберите и перенесите комплект с зависимостями
 
 На подключённой машине с Debian 13 amd64, CPython 3.13 и `python3-pip`
 возьмите wheelhouse уже принятого `offline-kit/`.
-Из каталога `mcp-pdf-tool/` запустите сборку, указав путь к репозиторию.
+Из корня репозитория запустите сборку пакета из `tools/pdf/`.
 Команда передаёт существующие wheels ядра как исходные требования, поэтому
 конфликт версий обнаружится при подборе зависимостей модуля. Используйте
 новый каталог назначения для каждого комплекта.
 [Сборщик и функция `write_lock`](../../scripts/build-offline-kit.py)
 
 ```bash
-MCP_REPO=/home/squire/codex/mcp_server
+MCP_REPO="$PWD"
 MCP_PDF_BUNDLE="$HOME/mcp-pdf-bundle"
 
 (
@@ -189,7 +84,7 @@ MCP_PDF_BUNDLE="$HOME/mcp-pdf-bundle"
   mkdir -- "$MCP_PDF_BUNDLE"
   python3 -m pip wheel --only-binary=:all: \
     --wheel-dir "$MCP_PDF_BUNDLE/wheelhouse" \
-    "$MCP_REPO"/offline-kit/wheelhouse/*.whl .
+    "$MCP_REPO"/offline-kit/wheelhouse/*.whl "$MCP_REPO/tools/pdf"
 
   python3 - "$MCP_REPO" "$MCP_PDF_BUNDLE" <<'PY'
 from pathlib import Path
@@ -201,7 +96,7 @@ write_lock = run_path(str(repo / "scripts/build-offline-kit.py"))["write_lock"]
 write_lock(bundle / "wheelhouse", bundle / "requirements.lock")
 PY
 
-  cp pdf-module.json "$MCP_PDF_BUNDLE/"
+  cp "$MCP_REPO/tools/pdf/pdf-module.json" "$MCP_PDF_BUNDLE/"
   cd "$MCP_PDF_BUNDLE"
   sha256sum requirements.lock pdf-module.json wheelhouse/*.whl > SHA256SUMS
 )
@@ -351,3 +246,7 @@ stderr сервера. При `permission_denied` проверьте поле `g
 на документы. При `handler_error` проверьте импорт `pypdf` из
 нового окружения, переменную `MCP_PDF_ROOT`, размер файла и наличие
 шифрования. Код `tool_timeout` указывает на истечение дедлайна вызова.
+
+Для проверки установленного пакета запустите из корня репозитория
+`"$MCP_PDF_RUNTIME/venv/bin/python" -m unittest discover -s tools/pdf/tests -v`.
+[Тесты PDF-инструмента](../../tools/pdf/tests/test_mcp_pdf_tool.py)
