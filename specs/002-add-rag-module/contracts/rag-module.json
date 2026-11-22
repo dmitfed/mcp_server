@@ -1,0 +1,64 @@
+{
+  "contract_version": 1,
+  "module_id": "rag_tool",
+  "tools": [
+    {
+      "name": "rag_index",
+      "description": "Индексировать файл из локального каталога базы знаний.",
+      "handler": "mcp_rag_tool.tools:rag_index",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file"],
+        "properties": {
+          "file": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "mode": {"type": "string", "enum": ["normal", "refresh", "publish"], "default": "normal"}
+        }
+      }
+    },
+    {
+      "name": "rag_search",
+      "description": "Найти материалы в активных версиях и переоценить их локальной моделью.",
+      "handler": "mcp_rag_tool.tools:rag_search",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+          "kind": {"type": "string", "enum": ["text", "code", "image", "table", "formula"]},
+          "file": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "min_score": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    {
+      "name": "rag_get",
+      "description": "Прочитать по идентификатору метаданные, материал, исходный файл или сохранённый отчёт индексации.",
+      "handler": "mcp_rag_tool.tools:rag_get",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "view": {"type": "string", "enum": ["metadata", "full_metadata", "report", "content"], "default": "metadata"},
+          "representation_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "offset": {"type": "integer", "minimum": 0, "default": 0},
+          "length": {"type": "integer", "minimum": 1, "maximum": 131072, "default": 65536}
+        },
+        "allOf": [
+          {
+            "if": {"required": ["view"], "properties": {"view": {"enum": ["full_metadata", "report", "content"]}}},
+            "else": {"not": {"anyOf": [{"required": ["offset"]}, {"required": ["length"]}]}}
+          },
+          {
+            "if": {"required": ["view"], "properties": {"view": {"const": "content"}}},
+            "else": {"not": {"required": ["representation_id"]}}
+          }
+        ]
+      }
+    }
+  ]
+}
