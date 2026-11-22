@@ -81,6 +81,7 @@ wheels, манифестами и тестами. Распаковка ZIP и ч
 
 ## Документация и исходники
 
+- [Офлайн-развёртывание с vLLM](specs/001-offline-mcp-core/deployment-vllm.md).
 - [Приёмка с llama.cpp и Qwen3](specs/001-offline-mcp-core/quickstart.md#проверить-модель-и-сквозной-диалог) и [контракт проверочного хоста](specs/001-offline-mcp-core/contracts/acceptance-host.md).
 - [Конфигурация сервера и HTTP-эндпоинт](specs/001-offline-mcp-core/contracts/server-mcp.md).
 - [Код ядра](src/mcp_offline_core), [конфигурации](examples), [тесты ядра](tests) и [сборщик офлайн-комплекта](scripts/build-offline-kit.py).
